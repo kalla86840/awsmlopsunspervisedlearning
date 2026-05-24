@@ -1,0 +1,35 @@
+project_name: cars-kmeans
+aws_region: us-west-1
+default_bucket: mlopswithsagemaker111
+sagemaker_execution_role_arn: arn:aws:iam::659613508664:role/service-role/AmazonSageMaker-ExecutionRole-20230507T235254
+
+pipeline:
+  name: cars-kmeans-pipeline
+  base_job_prefix: cars-kmeans
+
+data:
+  local_path: ../data/raw/cars_1020.csv
+  s3_prefix: cars-kmeans/input
+
+model:
+  problem_type: clustering
+  framework_version: "1.2-1"
+  training_instance_type: ml.m5.large
+  inference_instance_type: ml.m5.large
+  model_package_group_name: cars-kmeans-package-group
+  approval_status: Approved
+  n_clusters: 4
+  random_state: 42
+  min_silhouette_score: 0.10
+  category_column: gender
+  feature_columns:
+    - age
+    - miles
+    - debt
+    - income
+    - sales
+
+endpoint:
+  name: cars-kmeans-realtime
+  instance_type: ml.m5.large
+  initial_instance_count: 1
