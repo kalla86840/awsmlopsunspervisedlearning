@@ -1,0 +1,172 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CI/CD pipeline for cars K-Means SageMaker training, model registration, and real-time endpoint deployment.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: cars-kmeans
+  ArtifactBucketName:
+    Type: String
+    Default: mlopswithsagemaker111
+    Description: Existing S3 bucket for CodePipeline artifacts and SageMaker input data.
+  CodeStarConnectionArn:
+    Type: String
+    Description: CodeConnections connection ARN for the GitHub repository.
+  RepositoryId:
+    Type: String
+    Description: Repository identifier, for example owner/repository.
+  BranchName:
+    Type: String
+    Default: main
+  SageMakerExecutionRoleArn:
+    Type: String
+    Description: Existing SageMaker execution role used by training, processing, and endpoint hosting.
+
+Resources:
+  CarsKMeansCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-codebuild-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ProjectName}-codebuild-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "*"
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${ArtifactBucketName}
+                  - !Sub arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*
+              - Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource: !Ref SageMakerExecutionRoleArn
+              - Effect: Allow
+                Action:
+                  - sagemaker:CreateEndpoint
+                  - sagemaker:CreateEndpointConfig
+                  - sagemaker:CreateModel
+                  - sagemaker:CreateModelPackageGroup
+                  - sagemaker:CreatePipeline
+                  - sagemaker:DescribeEndpoint
+                  - sagemaker:DescribePipeline
+                  - sagemaker:DescribePipelineExecution
+                  - sagemaker:ListModelPackages
+                  - sagemaker:StartPipelineExecution
+                  - sagemaker:UpdateEndpoint
+                  - sagemaker:UpdatePipeline
+                Resource: "*"
+
+  CarsKMeansCodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${ProjectName}-codepipeline-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: !Sub ${ProjectName}-codepipeline-policy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                  - s3:PutObject
+                  - s3:GetBucketVersioning
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::${ArtifactBucketName}
+                  - !Sub arn:${AWS::Partition}:s3:::${ArtifactBucketName}/*
+              - Effect: Allow
+                Action:
+                  - codestar-connections:UseConnection
+                  - codeconnections:UseConnection
+                Resource: !Ref CodeStarConnectionArn
+              - Effect: Allow
+                Action:
+                  - codebuild:BatchGetBuilds
+                  - codebuild:StartBuild
+                Resource: "*"
+
+  CarsKMeansDeployProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${ProjectName}-train-and-deploy
+      ServiceRole: !GetAtt CarsKMeansCodeBuildRole.Arn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: cars-kmeans-mlops/buildspecs/deploy.yml
+      TimeoutInMinutes: 180
+
+  CarsKMeansPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub ${ProjectName}-cicd
+      RoleArn: !GetAtt CarsKMeansCodePipelineRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref RepositoryId
+                BranchName: !Ref BranchName
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - Name: TrainEvaluateDeploy
+          Actions:
+            - Name: RunMLOpsWorkflow
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref CarsKMeansDeployProject
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+Outputs:
+  PipelineName:
+    Value: !Ref CarsKMeansPipeline
+  CodeBuildProjectName:
+    Value: !Ref CarsKMeansDeployProject

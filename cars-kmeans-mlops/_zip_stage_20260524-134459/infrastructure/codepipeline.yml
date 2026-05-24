@@ -1,0 +1,142 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CI/CD pipeline for the cars K-Means SageMaker MLOps project.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: cars-kmeans
+  ArtifactBucketName:
+    Type: String
+    Description: Existing S3 bucket for CodePipeline artifacts.
+  CodeStarConnectionArn:
+    Type: String
+    Description: CodeConnections connection ARN for the source repository.
+  FullRepositoryId:
+    Type: String
+    Description: Repository identifier, for example owner/repository.
+  BranchName:
+    Type: String
+    Default: main
+  CodePipelineServiceRoleArn:
+    Type: String
+    Description: IAM role ARN used by CodePipeline.
+  CodeBuildServiceRoleArn:
+    Type: String
+    Description: IAM role ARN used by CodeBuild with SageMaker, S3, CloudWatch Logs, and ECR permissions.
+
+Resources:
+  TestProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-test"
+      ServiceRole: !Ref CodeBuildServiceRoleArn
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        Type: LINUX_CONTAINER
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspecs/test.yml
+
+  TrainRegisterProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-train-register"
+      ServiceRole: !Ref CodeBuildServiceRoleArn
+      TimeoutInMinutes: 480
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        Type: LINUX_CONTAINER
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspecs/train-register.yml
+
+  DeployEndpointProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "${ProjectName}-deploy-endpoint"
+      ServiceRole: !Ref CodeBuildServiceRoleArn
+      TimeoutInMinutes: 120
+      Artifacts:
+        Type: CODEPIPELINE
+      Environment:
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: aws/codebuild/standard:7.0
+        Type: LINUX_CONTAINER
+      Source:
+        Type: CODEPIPELINE
+        BuildSpec: buildspecs/deploy-endpoint.yml
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ProjectName}-cicd"
+      RoleArn: !Ref CodePipelineServiceRoleArn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucketName
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: Source
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref CodeStarConnectionArn
+                FullRepositoryId: !Ref FullRepositoryId
+                BranchName: !Ref BranchName
+                DetectChanges: true
+              OutputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - Name: Test
+          Actions:
+            - Name: UnitTests
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref TestProject
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - Name: TrainAndRegister
+          Actions:
+            - Name: SageMakerPipeline
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref TrainRegisterProject
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: RealtimeEndpoint
+              ActionTypeId:
+                Category: Build
+                Owner: AWS
+                Provider: CodeBuild
+                Version: "1"
+              Configuration:
+                ProjectName: !Ref DeployEndpointProject
+              InputArtifacts:
+                - Name: SourceOutput
+              RunOrder: 1
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
